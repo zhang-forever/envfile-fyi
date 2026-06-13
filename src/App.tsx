@@ -1,6 +1,8 @@
 import { useState, useCallback, useRef } from "react";
 
+/** A single key-value entry from a .env file with analysis results. */
 type FileEntry = { key: string; value: string; results: KeyPattern[] };
+/** Analysis results for a single file in bulk mode. */
 interface BulkFileResult {
   name: string;
   entries: FileEntry[];
@@ -86,6 +88,7 @@ const KEY_PATTERNS: KeyPattern[] = [
   { name: "Phone Number", pattern: /^\+?[1-9]\d{6,14}$/, severity: "low", description: "Phone number in E.164 format.", category: "Info", fixSuggestion: "Consider if this phone number should be public. Use a service number instead of personal." },
 ];
 
+/** Analyze a value string against all known secret patterns. */
 function analyzeKey(value: string): KeyPattern[] {
   if (!value || value.length < 5) return [];
   const results: KeyPattern[] = [];
@@ -99,6 +102,26 @@ function analyzeKey(value: string): KeyPattern[] {
     }
   }
   return results;
+}
+
+/** Parse raw .env text into an array of FileEntry objects. Shared by single-file and bulk modes. */
+function parseEnvEntries(text: string): FileEntry[] {
+  const lines = text.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
+  return lines
+    .map((line) => {
+      const eq = line.indexOf("=");
+      if (eq === -1) return null;
+      const key = line.slice(0, eq).trim();
+      if (!key || key.includes(" ")) return null;
+      const raw = line.slice(eq + 1);
+      // Strip surrounding quotes (single or double)
+      let val = raw.trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      return { key, value: val, results: analyzeKey(val) };
+    })
+    .filter(Boolean) as FileEntry[];
 }
 
 const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -124,28 +147,15 @@ export default function App() {
   const fileRef = useRef<HTMLInputElement>(null);
   const bulkDirRef = useRef<HTMLInputElement>(null);
 
+  /** Parse .env file text into analyzed entries */
   const parseEnv = useCallback((text: string, name?: string): FileEntry[] => {
     setFileName(name ?? null);
-    const lines = text.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
-    const parsed = lines
-      .map((line) => {
-        const eq = line.indexOf("=");
-        if (eq === -1) return null;
-        const key = line.slice(0, eq).trim();
-        if (!key || key.includes(" ")) return null;
-        const raw = line.slice(eq + 1);
-        // Strip surrounding quotes (single or double)
-        let val = raw.trim();
-        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-          val = val.slice(1, -1);
-        }
-        return { key, value: val, results: analyzeKey(val) };
-      })
-      .filter(Boolean) as { key: string; value: string; results: KeyPattern[] }[];
+    const parsed = parseEnvEntries(text);
     setEntries(parsed);
     return parsed;
   }, []);
 
+  /** Handle file drop on the upload zone */
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
@@ -159,6 +169,7 @@ export default function App() {
     [parseEnv]
   );
 
+  /** Handle file input selection */
   const onFilePick = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -171,6 +182,7 @@ export default function App() {
   );
 
   // Feature 1: Bulk scan - handle directory selection
+  /** Handle bulk directory selection, parsing all .env files found */
   const onBulkDirPick = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
@@ -181,21 +193,7 @@ export default function App() {
         const reader = new FileReader();
         reader.onload = () => {
           const text = reader.result as string;
-          const lines = text.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
-          const parsed: FileEntry[] = lines
-            .map((line) => {
-              const eq = line.indexOf("=");
- if (eq === -1) return null;
-              const key = line.slice(0, eq).trim();
-              if (!key || key.includes(" ")) return null;
-              const raw = line.slice(eq + 1);
-              let val = raw.trim();
-              if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-                val = val.slice(1, -1);
-              }
-              return { key, value: val, results: analyzeKey(val) };
-            })
-            .filter(Boolean) as FileEntry[];
+          const parsed: FileEntry[] = parseEnvEntries(text);
           results.push({ name: file.name, entries: parsed });
           pending--;
           if (pending === 0) {
@@ -213,6 +211,7 @@ export default function App() {
   );
 
   // Feature 3: Export as JSON
+  /** Export analysis results as JSON download */
   const exportJSON = useCallback(() => {
     const data = bulkMode ? bulkResults : [{ name: fileName || ".env", entries }];
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
@@ -227,6 +226,7 @@ export default function App() {
   }, [bulkMode, bulkResults, entries, fileName]);
 
   // Feature 3: Export as HTML
+  /** Export analysis results as styled HTML report download */
   const exportHTML = useCallback(() => {
     const data = bulkMode ? bulkResults : [{ name: fileName || ".env", entries }];
     let totalCritical = 0, totalHigh = 0, totalMedium = 0, totalLow = 0, totalClean = 0;
@@ -242,6 +242,8 @@ export default function App() {
       });
     });
     const severityColors: Record<string, string> = { critical: "#dc2626", high: "#ea580c", medium: "#ca8a04", low: "#16a34a" };
+  /** Escape HTML entities to prevent XSS in exported report */
+  const escapeHtml = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>envfile.fyi Report</title>
 <style>body{font-family:system-ui,sans-serif;max-width:900px;margin:40px auto;padding:20px;color:#1a1a1a}
 h1{display:flex;align-items:center;gap:10px}.summary{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap}
@@ -265,10 +267,10 @@ code{background:#f3f4f6;padding:2px 6px;border-radius:4px;font-size:13px}</style
       html += `<div class="file-section"><div class="file-header">📄 ${f.name} — ${f.entries.length} keys, ${flagged} flagged</div>`;
       f.entries.forEach((e) => {
         const color = e.results.length > 0 ? severityColors[e.results[0].severity] : "#16a34a";
-        html += `<div class="entry"><code>${e.key}</code> <span style="color:#aaa">→</span> <code style="color:#666">${e.value.length > 60 ? e.value.slice(0, 60) + "…" : e.value || "(empty)"}</code>`;
+        html += `<div class="entry"><code>${escapeHtml(e.key)}</code> <span style="color:#aaa">→</span> <code style="color:#666">${escapeHtml(e.value.length > 60 ? e.value.slice(0, 60) + "…" : e.value || "(empty)")}</code>`;
         e.results.forEach((r) => {
-          html += `<div style="margin-top:4px;font-size:12px;color:${severityColors[r.severity]}"><strong>${r.name}</strong> — ${r.description}</div>`;
-          html += `<div class="fix">💡 <strong>Fix:</strong> ${r.fixSuggestion}</div>`;
+          html += `<div style="margin-top:4px;font-size:12px;color:${severityColors[r.severity]}"><strong>${escapeHtml(r.name)}</strong> — ${escapeHtml(r.description)}</div>`;
+          html += `<div class="fix">💡 <strong>Fix:</strong> ${escapeHtml(r.fixSuggestion)}</div>`;
         });
         html += `</div>`;
       });
@@ -286,6 +288,7 @@ code{background:#f3f4f6;padding:2px 6px;border-radius:4px;font-size:13px}</style
     URL.revokeObjectURL(url);
   }, [bulkMode, bulkResults, entries, fileName]);
 
+  /** Generate and download a sanitized .env.example file */
   const generateExample = () => {
     const source = bulkMode ? bulkResults.flatMap((f) => f.entries) : entries;
     const lines = source.map((e) => {
